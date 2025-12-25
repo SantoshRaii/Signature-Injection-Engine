@@ -11,22 +11,18 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const A4_RATIO = 1.414;
 const MAX_PDF_WIDTH = 900;
 
+// ENV based backend URL
+const API_BASE = import.meta.env.VITE_API_BASE;
+
+// Browser → PDF coordinate conversion
 function browserToPdfCoords(box, pdfWidth, pdfHeight) {
   const boxWidth = box.widthPercent * pdfWidth;
   const boxHeight = box.heightPercent * pdfHeight;
 
   const x = box.xPercent * pdfWidth;
-  const y =
-    pdfHeight -
-    box.yPercent * pdfHeight -
-    boxHeight;
+  const y = pdfHeight - box.yPercent * pdfHeight - boxHeight;
 
-  return {
-    x,
-    y,
-    width: boxWidth,
-    height: boxHeight,
-  };
+  return { x, y, width: boxWidth, height: boxHeight };
 }
 
 export default function PdfViewer() {
@@ -36,11 +32,14 @@ export default function PdfViewer() {
 
   const [pageWidth, setPageWidth] = useState(600);
 
-  // 🔥 Signature pad state
+  // Signature pad
   const [showPad, setShowPad] = useState(false);
   const [signatureImg, setSignatureImg] = useState(null);
 
-  // 🔥 Signature box (percentage-based)
+  // Disable drag while signing (MOBILE FIX)
+  const [dragEnabled, setDragEnabled] = useState(true);
+
+  // Signature box (percentage based)
   const [box, setBox] = useState({
     xPercent: 0.3,
     yPercent: 0.4,
@@ -51,24 +50,13 @@ export default function PdfViewer() {
   const PDF_WIDTH = 595;
   const PDF_HEIGHT = 842;
 
-  const handleLogCoords = () => {
-  const pdfCoords = browserToPdfCoords(
-        box,
-        PDF_WIDTH,
-        PDF_HEIGHT
-    );
-
-    console.log("PDF COORDINATES:", pdfCoords);
- };
-
-
-
-  // 🔥 Responsive PDF width
+  /* ---------------- Responsive PDF width ---------------- */
   useEffect(() => {
     const updateWidth = () => {
       if (!containerRef.current) return;
-      const containerWidth = containerRef.current.offsetWidth;
-      setPageWidth(Math.min(containerWidth, MAX_PDF_WIDTH));
+      setPageWidth(
+        Math.min(containerRef.current.offsetWidth, MAX_PDF_WIDTH)
+      );
     };
 
     updateWidth();
@@ -76,7 +64,7 @@ export default function PdfViewer() {
     return () => window.removeEventListener("resize", updateWidth);
   }, []);
 
-  // 🔥 Render PDF safely
+  /* ---------------- Render PDF ---------------- */
   useEffect(() => {
     const renderPDF = async () => {
       const pdf = await pdfjsLib.getDocument("/sample.pdf").promise;
@@ -92,9 +80,7 @@ export default function PdfViewer() {
       canvas.width = scaledViewport.width;
       canvas.height = scaledViewport.height;
 
-      if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
-      }
+      if (renderTaskRef.current) renderTaskRef.current.cancel();
 
       const task = page.render({
         canvasContext: ctx,
@@ -102,47 +88,42 @@ export default function PdfViewer() {
       });
 
       renderTaskRef.current = task;
-
-      try {
-        await task.promise;
-      } catch (err) {
-        if (err?.name !== "RenderingCancelledException") {
-          console.error(err);
-        }
-      }
+      await task.promise;
     };
 
     if (pageWidth) renderPDF();
-
-    return () => {
-      if (renderTaskRef.current) {
-        renderTaskRef.current.cancel();
-      }
-    };
   }, [pageWidth]);
 
-    const handleSignPdf = async () => {
+  /* ---------------- Open Signature Pad (Desktop + Mobile) ---------------- */
+  const openSignaturePad = () => {
+    setDragEnabled(false);
+    setShowPad(true);
+  };
+
+  /* ---------------- Sign PDF ---------------- */
+  const handleSignPdf = async () => {
+    if (!signatureImg) {
+      alert("Please add your signature first");
+      return;
+    }
+
     const payload = {
-        pdfId: "sample.pdf",
-        signature: signatureImg, // base64 image
-        coords: browserToPdfCoords(box, PDF_WIDTH, PDF_HEIGHT),
+      pdfId: "sample.pdf",
+      signature: signatureImg,
+      coords: browserToPdfCoords(box, PDF_WIDTH, PDF_HEIGHT),
     };
 
-    const res = await fetch("http://localhost:4000/sign-pdf", {
-        method: "POST",
-        headers: {
-        "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+    const res = await fetch(`${API_BASE}/sign-pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
 
     const data = await res.json();
-    console.log("SIGNED PDF URL:", data.url);
 
-    // optional: open signed pdf
-    window.open(`http://localhost:4000${data.url}`, "_blank");
-    };
-
+    // Mobile-safe download
+    window.location.href = `${API_BASE}${data.url}`;
+  };
 
   return (
     <div
@@ -159,8 +140,11 @@ export default function PdfViewer() {
       {/* PDF Canvas */}
       <canvas ref={canvasRef} />
 
-      {/* Signature Placeholder */}
+      {/* Signature Box */}
       <Rnd
+        disableDragging={!dragEnabled}
+        enableResizing={dragEnabled}
+        bounds="parent"
         size={{
           width: box.widthPercent * pageWidth,
           height: box.heightPercent * pageWidth * A4_RATIO,
@@ -169,7 +153,6 @@ export default function PdfViewer() {
           x: box.xPercent * pageWidth,
           y: box.yPercent * pageWidth * A4_RATIO,
         }}
-        bounds="parent"
         onDragStop={(e, d) =>
           setBox((prev) => ({
             ...prev,
@@ -191,7 +174,11 @@ export default function PdfViewer() {
         }}
       >
         <div
-          onClick={() => setShowPad(true)}
+          onMouseUp={openSignaturePad}
+          onTouchEnd={(e) => {
+            e.stopPropagation();
+            openSignaturePad();
+          }}
           style={{
             width: "100%",
             height: "100%",
@@ -222,28 +209,34 @@ export default function PdfViewer() {
       {/* Signature Pad Modal */}
       {showPad && (
         <SignaturePad
-          onSave={(img) => setSignatureImg(img)}
-          onClose={() => setShowPad(false)}
+          onSave={(img) => {
+            setSignatureImg(img);
+            setShowPad(false);
+            setDragEnabled(true);
+          }}
+          onClose={() => {
+            setShowPad(false);
+            setDragEnabled(true);
+          }}
         />
       )}
 
+      {/* Download Button */}
       <button
         onClick={handleSignPdf}
         style={{
-            marginTop: 20,
-            padding: "8px 16px",
-            background: "#2563eb",
-            color: "#fff",
-            border: "none",
-            borderRadius: 4,
-            cursor: "pointer",
+          marginTop: 20,
+          padding: "10px 18px",
+          background: "#2563eb",
+          color: "#fff",
+          border: "none",
+          borderRadius: 4,
+          cursor: "pointer",
+          width: "100%",
         }}
-        >
-         Download Signed PDF
+      >
+        Download Signed PDF
       </button>
-
-
     </div>
-    
   );
 }
