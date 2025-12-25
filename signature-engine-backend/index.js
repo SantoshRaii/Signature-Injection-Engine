@@ -7,16 +7,17 @@ import { fileURLToPath } from "url";
 import mongoose from "mongoose";
 import { sha256FromFile } from "./utils/hash.js";
 import Audit from "./models/Audit.js";
-
+import dotenv from "dotenv";
+dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
-mongoose.connect("mongodb://127.0.0.1:27017/signature_engine");
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("MongoDB connected"))
+  .catch((err) => console.error("MongoDB error:", err));
 
-mongoose.connection.once("open", () => {
-  console.log("MongoDB connected");
-});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,11 +54,15 @@ app.post("/sign-pdf", async (req, res) => {
     // 4️⃣ Save signed PDF
     const signedPdfBytes = await pdfDoc.save();
 
+    const signedDir = path.join(__dirname, "uploads", "signed");
+
+    if (!fs.existsSync(signedDir)) {
+    fs.mkdirSync(signedDir, { recursive: true });
+    }
+
     const outputPath = path.join(
-      __dirname,
-      "uploads",
-      "signed",
-      `signed-${Date.now()}.pdf`
+    signedDir,
+    `signed-${Date.now()}.pdf`
     );
 
     fs.writeFileSync(outputPath, signedPdfBytes);
@@ -86,6 +91,6 @@ app.post("/sign-pdf", async (req, res) => {
 app.use("/uploads", express.static("uploads"));
 app.use("/public", express.static("public"));
 
-app.listen(4000, () =>
+app.listen(process.env.PORT || 4000, () =>
   console.log("Backend running on http://localhost:4000")
 );
